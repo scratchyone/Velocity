@@ -30,6 +30,7 @@ import com.velocitypowered.proxy.config.migration.ConfigurationMigration;
 import com.velocitypowered.proxy.config.migration.ForwardingMigration;
 import com.velocitypowered.proxy.config.migration.KeyAuthenticationMigration;
 import com.velocitypowered.proxy.config.migration.MotdMigration;
+import com.velocitypowered.proxy.config.migration.TransferIntegrationMigration;
 import com.velocitypowered.proxy.util.AddressUtil;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.io.IOException;
@@ -59,7 +60,7 @@ public class VelocityConfiguration implements ProxyConfig {
   private static final Logger logger = LogManager.getLogger(VelocityConfiguration.class);
 
   @Expose
-  private String bind = "0.0.0.0:25577";
+  private String bind = "0.0.0.0:25565";
   @Expose
   private String motd = "<aqua>A Velocity Server";
   @Expose
@@ -398,6 +399,10 @@ public class VelocityConfiguration implements ProxyConfig {
     return advanced.isLogPlayerConnections();
   }
 
+  public boolean isAcceptTransfers() {
+    return this.advanced.isAcceptTransfers();
+  }
+
   public boolean isForceKeyAuthentication() {
     return forceKeyAuthentication;
   }
@@ -456,7 +461,8 @@ public class VelocityConfiguration implements ProxyConfig {
       final ConfigurationMigration[] migrations = {
           new ForwardingMigration(),
           new KeyAuthenticationMigration(),
-          new MotdMigration()
+          new MotdMigration(),
+          new TransferIntegrationMigration()
       };
 
       for (final ConfigurationMigration migration : migrations) {
@@ -497,13 +503,13 @@ public class VelocityConfiguration implements ProxyConfig {
       final PingPassthroughMode pingPassthroughMode = config.getEnumOrElse("ping-passthrough",
               PingPassthroughMode.DISABLED);
 
-      final String bind = config.getOrElse("bind", "0.0.0.0:25577");
+      final String bind = config.getOrElse("bind", "0.0.0.0:25565");
       final int maxPlayers = config.getIntOrElse("show-max-players", 500);
       final boolean onlineMode = config.getOrElse("online-mode", true);
       final boolean forceKeyAuthentication = config.getOrElse("force-key-authentication", true);
       final boolean announceForge = config.getOrElse("announce-forge", true);
       final boolean preventClientProxyConnections = config.getOrElse(
-              "prevent-client-proxy-connections", true);
+              "prevent-client-proxy-connections", false);
       final boolean kickExisting = config.getOrElse("kick-existing-players", false);
       final boolean enablePlayerAddressLogging = config.getOrElse(
               "enable-player-address-logging", true);
@@ -708,6 +714,8 @@ public class VelocityConfiguration implements ProxyConfig {
     private boolean logCommandExecutions = false;
     @Expose
     private boolean logPlayerConnections = true;
+    @Expose
+    private boolean acceptTransfers = false;
 
     private Advanced() {
     }
@@ -732,6 +740,7 @@ public class VelocityConfiguration implements ProxyConfig {
         this.announceProxyCommands = config.getOrElse("announce-proxy-commands", true);
         this.logCommandExecutions = config.getOrElse("log-command-executions", false);
         this.logPlayerConnections = config.getOrElse("log-player-connections", true);
+        this.acceptTransfers = config.getOrElse("accepts-transfers", false);
       }
     }
 
@@ -791,6 +800,10 @@ public class VelocityConfiguration implements ProxyConfig {
       return logPlayerConnections;
     }
 
+    public boolean isAcceptTransfers() {
+      return this.acceptTransfers;
+    }
+
     @Override
     public String toString() {
       return "Advanced{"
@@ -807,6 +820,7 @@ public class VelocityConfiguration implements ProxyConfig {
           + ", announceProxyCommands=" + announceProxyCommands
           + ", logCommandExecutions=" + logCommandExecutions
           + ", logPlayerConnections=" + logPlayerConnections
+          + ", acceptTransfers=" + acceptTransfers
           + '}';
     }
   }
@@ -816,7 +830,7 @@ public class VelocityConfiguration implements ProxyConfig {
     @Expose
     private boolean queryEnabled = false;
     @Expose
-    private int queryPort = 25577;
+    private int queryPort = 25565;
     @Expose
     private String queryMap = "Velocity";
     @Expose
@@ -835,7 +849,7 @@ public class VelocityConfiguration implements ProxyConfig {
     private Query(CommentedConfig config) {
       if (config != null) {
         this.queryEnabled = config.getOrElse("enabled", false);
-        this.queryPort = config.getIntOrElse("port", 25577);
+        this.queryPort = config.getIntOrElse("port", 25565);
         this.queryMap = config.getOrElse("map", "Velocity");
         this.showPlugins = config.getOrElse("show-plugins", false);
       }

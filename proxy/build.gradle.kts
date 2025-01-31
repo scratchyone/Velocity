@@ -8,6 +8,7 @@ plugins {
 
 application {
     mainClass.set("com.velocitypowered.proxy.Velocity")
+    applicationDefaultJvmArgs += listOf("-Dvelocity.packet-decode-logging=true");
 }
 
 tasks {
@@ -50,7 +51,11 @@ tasks {
         exclude("it/unimi/dsi/fastutil/ints/*Int2Short*")
         exclude("it/unimi/dsi/fastutil/ints/*Int2Reference*")
         exclude("it/unimi/dsi/fastutil/ints/IntAVL*")
-        exclude("it/unimi/dsi/fastutil/ints/IntArray*")
+        exclude("it/unimi/dsi/fastutil/ints/IntArrayF*")
+        exclude("it/unimi/dsi/fastutil/ints/IntArrayI*")
+        exclude("it/unimi/dsi/fastutil/ints/IntArrayL*")
+        exclude("it/unimi/dsi/fastutil/ints/IntArrayP*")
+        exclude("it/unimi/dsi/fastutil/ints/IntArraySet*")
         exclude("it/unimi/dsi/fastutil/ints/*IntBi*")
         exclude("it/unimi/dsi/fastutil/ints/Int*Pair")
         exclude("it/unimi/dsi/fastutil/ints/IntLinked*")
@@ -91,6 +96,15 @@ tasks {
         dependsOn(configurateBuildTask)
         from(zipTree(configurateBuildTask.map { it.outputs.files.singleFile }))
     }
+
+    runShadow {
+        workingDir = file("run").also(File::mkdirs)
+        standardInput = System.`in`
+    }
+    named<JavaExec>("run") {
+        workingDir = file("run").also(File::mkdirs)
+        standardInput = System.`in` // Doesn't work?
+    }
 }
 
 dependencies {
@@ -117,7 +131,7 @@ dependencies {
     runtimeOnly(libs.disruptor)
     implementation(libs.fastutil)
     implementation(platform(libs.adventure.bom))
-    implementation("net.kyori:adventure-nbt")
+    implementation(libs.adventure.text.serializer.json.legacy.impl)
     implementation(libs.adventure.facet)
     implementation(libs.completablefutures)
     implementation(libs.nightconfig)

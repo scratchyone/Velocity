@@ -19,12 +19,16 @@ package com.velocitypowered.proxy.connection.client;
 
 import static com.velocitypowered.api.proxy.ConnectionRequestBuilder.Status.ALREADY_CONNECTED;
 import static com.velocitypowered.proxy.connection.util.ConnectionRequestResults.plainResult;
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
 import com.google.common.base.Preconditions;
 import com.google.gson.JsonObject;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.DisconnectEvent.LoginStatus;
+import com.velocitypowered.api.event.connection.PreTransferEvent;
+import com.velocitypowered.api.event.player.CookieRequestEvent;
+import com.velocitypowered.api.event.player.CookieStoreEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent.DisconnectPlayer;
 import com.velocitypowered.api.event.player.KickedFromServerEvent.Notify;
@@ -33,6 +37,8 @@ import com.velocitypowered.api.event.player.KickedFromServerEvent.ServerKickResu
 import com.velocitypowered.api.event.player.PlayerModInfoEvent;
 import com.velocitypowered.api.event.player.PlayerSettingsChangedEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
+import com.velocitypowered.api.event.player.configuration.PlayerEnterConfigurationEvent;
+import com.velocitypowered.api.network.HandshakeIntent;
 import com.velocitypowered.api.network.ProtocolState;
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.api.permission.PermissionFunction;
@@ -44,37 +50,47 @@ import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.crypto.IdentifiedKey;
 import com.velocitypowered.api.proxy.crypto.KeyIdentifiable;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
+import com.velocitypowered.api.proxy.messages.PluginMessageEncoder;
 import com.velocitypowered.api.proxy.player.PlayerSettings;
 import com.velocitypowered.api.proxy.player.ResourcePackInfo;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.util.GameProfile;
 import com.velocitypowered.api.util.ModInfo;
+import com.velocitypowered.api.util.ServerLink;
 import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.adventure.VelocityBossBarImplementation;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftConnectionAssociation;
 import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
-import com.velocitypowered.proxy.connection.player.VelocityResourcePackInfo;
-import com.velocitypowered.proxy.connection.player.resourcepack.ResourcePackHandler;
+import com.velocitypowered.proxy.connection.player.bundle.BundleDelimiterHandler;
+import com.velocitypowered.proxy.connection.player.resourcepack.VelocityResourcePackInfo;
+import com.velocitypowered.proxy.connection.player.resourcepack.handler.ResourcePackHandler;
 import com.velocitypowered.proxy.connection.util.ConnectionMessages;
 import com.velocitypowered.proxy.connection.util.ConnectionRequestResults.Impl;
 import com.velocitypowered.proxy.connection.util.VelocityInboundConnection;
 import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.netty.MinecraftEncoder;
+import com.velocitypowered.proxy.protocol.packet.BundleDelimiterPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
+import com.velocitypowered.proxy.protocol.packet.ClientboundCookieRequestPacket;
+import com.velocitypowered.proxy.protocol.packet.ClientboundStoreCookiePacket;
 import com.velocitypowered.proxy.protocol.packet.DisconnectPacket;
 import com.velocitypowered.proxy.protocol.packet.HeaderAndFooterPacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import com.velocitypowered.proxy.protocol.packet.RemoveResourcePackPacket;
+import com.velocitypowered.proxy.protocol.packet.TransferPacket;
 import com.velocitypowered.proxy.protocol.packet.chat.ChatQueue;
 import com.velocitypowered.proxy.protocol.packet.chat.ChatType;
 import com.velocitypowered.proxy.protocol.packet.chat.ComponentHolder;
 import com.velocitypowered.proxy.protocol.packet.chat.PlayerChatCompletionPacket;
 import com.velocitypowered.proxy.protocol.packet.chat.builder.ChatBuilderFactory;
+import com.velocitypowered.proxy.protocol.packet.chat.builder.ChatBuilderV2;
 import com.velocitypowered.proxy.protocol.packet.chat.legacy.LegacyChatPacket;
+import com.velocitypowered.proxy.protocol.packet.config.ClientboundServerLinksPacket;
 import com.velocitypowered.proxy.protocol.packet.config.StartUpdatePacket;
 import com.velocitypowered.proxy.protocol.packet.title.GenericTitlePacket;
+import com.velocitypowered.proxy.protocol.util.ByteBufDataOutput;
 import com.velocitypowered.proxy.server.VelocityRegisteredServer;
 import com.velocitypowered.proxy.tablist.InternalTabList;
 import com.velocitypowered.proxy.tablist.KeyedVelocityTabList;
@@ -83,6 +99,7 @@ import com.velocitypowered.proxy.tablist.VelocityTabListLegacy;
 import com.velocitypowered.proxy.util.ClosestLocaleMatcher;
 import com.velocitypowered.proxy.util.DurationUtils;
 import com.velocitypowered.proxy.util.TranslatableMapper;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import java.net.InetSocketAddress;
 import java.util.Collection;
@@ -96,9 +113,11 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import net.kyori.adventure.audience.MessageType;
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.identity.Identity;
+import net.kyori.adventure.key.Key;
 import net.kyori.adventure.permission.PermissionChecker;
 import net.kyori.adventure.platform.facet.FacetPointers;
 import net.kyori.adventure.platform.facet.FacetPointers.Type;
@@ -137,6 +156,8 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
    */
   private final MinecraftConnection connection;
   private final @Nullable InetSocketAddress virtualHost;
+  private final @Nullable String rawVirtualHost;
+  private final HandshakeIntent handshakeIntent;
   private GameProfile profile;
   private PermissionFunction permissionFunction;
   private int tryIndex = 0;
@@ -173,12 +194,14 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   private final ChatBuilderFactory chatBuilderFactory;
 
   ConnectedPlayer(VelocityServer server, GameProfile profile, MinecraftConnection connection,
-                  @Nullable InetSocketAddress virtualHost, boolean onlineMode,
-                  @Nullable IdentifiedKey playerKey) {
+                  @Nullable InetSocketAddress virtualHost, @Nullable String rawVirtualHost, boolean onlineMode,
+                  HandshakeIntent handshakeIntent, @Nullable IdentifiedKey playerKey) {
     this.server = server;
     this.profile = profile;
     this.connection = connection;
     this.virtualHost = virtualHost;
+    this.rawVirtualHost = rawVirtualHost;
+    this.handshakeIntent = handshakeIntent;
     this.permissionFunction = PermissionFunction.ALWAYS_UNDEFINED;
     this.connectionPhase = connection.getType().getInitialClientPhase();
     this.onlineMode = onlineMode;
@@ -336,6 +359,11 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   @Override
   public Optional<InetSocketAddress> getVirtualHost() {
     return Optional.ofNullable(virtualHost);
+  }
+
+  @Override
+  public Optional<String> getRawVirtualHost() {
+    return Optional.ofNullable(rawVirtualHost);
   }
 
   void setPermissionFunction(PermissionFunction permissionFunction) {
@@ -618,6 +646,10 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
     return connectionInFlight;
   }
 
+  public VelocityServerConnection getConnectionInFlightOrConnectedServer() {
+    return connectionInFlight != null ? connectionInFlight : connectedServer;
+  }
+
   public void resetInFlightConnection() {
     connectionInFlight = null;
   }
@@ -795,7 +827,7 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
             }, connection.eventLoop());
       } else if (event.getResult() instanceof final Notify res) {
         if (event.kickedDuringServerConnect() && previousConnection != null) {
-          sendMessage(Identity.nil(), res.getMessageComponent());
+          sendMessage(res.getMessageComponent());
         } else {
           disconnect(res.getMessageComponent());
         }
@@ -947,10 +979,30 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   public boolean sendPluginMessage(@NotNull ChannelIdentifier identifier, byte @NotNull [] data) {
     Preconditions.checkNotNull(identifier, "identifier");
     Preconditions.checkNotNull(data, "data");
-    PluginMessagePacket message = new PluginMessagePacket(identifier.getId(),
+    final PluginMessagePacket message = new PluginMessagePacket(identifier.getId(),
             Unpooled.wrappedBuffer(data));
     connection.write(message);
     return true;
+  }
+
+  @Override
+  public boolean sendPluginMessage(
+          final @NotNull ChannelIdentifier identifier,
+          final @NotNull PluginMessageEncoder dataEncoder
+  ) {
+    requireNonNull(identifier);
+    requireNonNull(dataEncoder);
+    final ByteBuf buf = Unpooled.buffer();
+    final ByteBufDataOutput dataOutput = new ByteBufDataOutput(buf);
+    dataEncoder.encode(dataOutput);
+    if (buf.isReadable()) {
+      final PluginMessagePacket message = new PluginMessagePacket(identifier.getId(), buf);
+      connection.write(message);
+      return true;
+    } else {
+      buf.release();
+      return false;
+    }
   }
 
   @Override
@@ -961,6 +1013,85 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
 
   void setClientBrand(final @Nullable String clientBrand) {
     this.clientBrand = clientBrand;
+  }
+
+  @Override
+  public void transferToHost(final InetSocketAddress address) {
+    Preconditions.checkNotNull(address);
+    Preconditions.checkArgument(
+            this.getProtocolVersion().compareTo(ProtocolVersion.MINECRAFT_1_20_5) >= 0,
+            "Player version must be 1.20.5 to be able to transfer to another host");
+
+    server.getEventManager().fire(new PreTransferEvent(this, address)).thenAccept((event) -> {
+      if (event.getResult().isAllowed()) {
+        InetSocketAddress resultedAddress = event.getResult().address();
+        if (resultedAddress == null) {
+          resultedAddress = address;
+        }
+        connection.write(new TransferPacket(
+                resultedAddress.getHostName(), resultedAddress.getPort()));
+      }
+    });
+  }
+
+  @Override
+  public void storeCookie(final Key key, final byte[] data) {
+    Preconditions.checkNotNull(key);
+    Preconditions.checkNotNull(data);
+    Preconditions.checkArgument(
+        this.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_5),
+        "Player version must be at least 1.20.5 to be able to store cookies");
+
+    if (connection.getState() != StateRegistry.PLAY
+        && connection.getState() != StateRegistry.CONFIG) {
+      throw new IllegalStateException("Can only store cookie in CONFIGURATION or PLAY protocol");
+    }
+
+    server.getEventManager().fire(new CookieStoreEvent(this, key, data))
+        .thenAcceptAsync(event -> {
+          if (event.getResult().isAllowed()) {
+            final Key resultedKey = event.getResult().getKey() == null
+                ? event.getOriginalKey() : event.getResult().getKey();
+            final byte[] resultedData = event.getResult().getData() == null
+                ? event.getOriginalData() : event.getResult().getData();
+
+            connection.write(new ClientboundStoreCookiePacket(resultedKey, resultedData));
+          }
+        }, connection.eventLoop());
+  }
+
+  @Override
+  public void requestCookie(final Key key) {
+    Preconditions.checkNotNull(key);
+    Preconditions.checkArgument(
+        this.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_5),
+        "Player version must be at least 1.20.5 to be able to retrieve cookies");
+
+    server.getEventManager().fire(new CookieRequestEvent(this, key))
+        .thenAcceptAsync(event -> {
+          if (event.getResult().isAllowed()) {
+            final Key resultedKey = event.getResult().getKey() == null
+                ? event.getOriginalKey() : event.getResult().getKey();
+
+            connection.write(new ClientboundCookieRequestPacket(resultedKey));
+          }
+        }, connection.eventLoop());
+  }
+
+  @Override
+  public void setServerLinks(final @NotNull List<ServerLink> links) {
+    Preconditions.checkNotNull(links, "links");
+    Preconditions.checkArgument(
+        this.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_21),
+        "Player version must be at least 1.21 to be able to set server links");
+
+    if (connection.getState() != StateRegistry.PLAY
+        && connection.getState() != StateRegistry.CONFIG) {
+      throw new IllegalStateException("Can only send server links in CONFIGURATION or PLAY protocol");
+    }
+
+    connection.write(new ClientboundServerLinksPacket(List.copyOf(links).stream()
+        .map(l -> new ClientboundServerLinksPacket.ServerLink(l, getProtocolVersion())).toList()));
   }
 
   @Override
@@ -994,11 +1125,12 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
         "input cannot be greater than " + LegacyChatPacket.MAX_SERVERBOUND_MESSAGE_LENGTH
             + " characters in length");
     if (getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_19)) {
-      this.chatQueue.hijack(getChatBuilderFactory().builder().asPlayer(this).message(input),
-          (instant, item) -> {
-            item.setTimestamp(instant);
-            return item.toServer();
-          });
+      ChatBuilderV2 message = getChatBuilderFactory().builder().asPlayer(this).message(input);
+      this.chatQueue.queuePacket(chatState -> {
+        message.setTimestamp(chatState.lastTimestamp);
+        message.setLastSeenMessages(chatState.createLastSeen());
+        return message.toServer();
+      });
     } else {
       ensureBackendConnection().write(getChatBuilderFactory().builder()
           .asPlayer(this).message(input).toServer());
@@ -1124,19 +1256,49 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   }
 
   /**
+   * Forwards the keep alive packet to the backend server it belongs to.
+   * This is either the connection in flight or the connected server.
+   */
+  public boolean forwardKeepAlive(final KeepAlivePacket packet) {
+    if (!this.sendKeepAliveToBackend(connectedServer, packet)) {
+      return this.sendKeepAliveToBackend(connectionInFlight, packet);
+    }
+    return false;
+  }
+
+  private boolean sendKeepAliveToBackend(final @Nullable VelocityServerConnection serverConnection, final @NotNull KeepAlivePacket packet) {
+    if (serverConnection != null) {
+      final Long sentTime = serverConnection.getPendingPings().remove(packet.getRandomId());
+      if (sentTime != null) {
+        final MinecraftConnection smc = serverConnection.getConnection();
+        if (smc != null) {
+          setPing(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sentTime));
+          smc.write(packet);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Switches the connection to the client into config state.
    */
   public void switchToConfigState() {
-    CompletableFuture.runAsync(() -> {
-      connection.write(StartUpdatePacket.INSTANCE);
-      connection.getChannel().pipeline()
-          .get(MinecraftEncoder.class).setState(StateRegistry.CONFIG);
-      // Make sure we don't send any play packets to the player after update start
-      connection.addPlayPacketQueueHandler();
-    }, connection.eventLoop()).exceptionally((ex) -> {
-      logger.error("Error switching player connection to config state:", ex);
-      return null;
-    });
+    server.getEventManager().fire(new PlayerEnterConfigurationEvent(this, getConnectionInFlightOrConnectedServer()))
+        .completeOnTimeout(null, 5, TimeUnit.SECONDS).thenRunAsync(() -> {
+          if (bundleHandler.isInBundleSession()) {
+            bundleHandler.toggleBundleSession();
+            connection.write(BundleDelimiterPacket.INSTANCE);
+          }
+          connection.write(StartUpdatePacket.INSTANCE);
+          connection.getChannel().pipeline().get(MinecraftEncoder.class).setState(StateRegistry.CONFIG);
+          // Make sure we don't send any play packets to the player after update start
+          connection.addPlayPacketQueueHandler();
+        }, connection.eventLoop()).exceptionally((ex) -> {
+          logger.error("Error switching player connection to config state", ex);
+          return null;
+        });
   }
 
   /**
@@ -1174,6 +1336,11 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   @Override
   public ProtocolState getProtocolState() {
     return connection.getState().toProtocolState();
+  }
+
+  @Override
+  public HandshakeIntent getHandshakeIntent() {
+    return handshakeIntent;
   }
 
   private final class ConnectionRequestBuilderImpl implements ConnectionRequestBuilder {
@@ -1269,24 +1436,20 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
         }
 
         switch (status.getStatus()) {
-          case ALREADY_CONNECTED:
-            sendMessage(Identity.nil(), ConnectionMessages.ALREADY_CONNECTED);
-            break;
-          case CONNECTION_IN_PROGRESS:
-            sendMessage(Identity.nil(), ConnectionMessages.IN_PROGRESS);
-            break;
-          case CONNECTION_CANCELLED:
+          case ALREADY_CONNECTED -> sendMessage(ConnectionMessages.ALREADY_CONNECTED);
+          case CONNECTION_IN_PROGRESS -> sendMessage(ConnectionMessages.IN_PROGRESS);
+          case CONNECTION_CANCELLED -> {
             // Ignored; the plugin probably already handled this.
-            break;
-          case SERVER_DISCONNECTED:
-            Component reason = status.getReasonComponent()
-                .orElse(ConnectionMessages.INTERNAL_SERVER_CONNECTION_ERROR);
+          }
+          case SERVER_DISCONNECTED -> {
+            final Component reason = status.getReasonComponent()
+                    .orElse(ConnectionMessages.INTERNAL_SERVER_CONNECTION_ERROR);
             handleConnectionException(toConnect,
-                DisconnectPacket.create(reason, getProtocolVersion(), connection.getState()), status.isSafe());
-            break;
-          default:
+                    DisconnectPacket.create(reason, getProtocolVersion(), connection.getState()), status.isSafe());
+          }
+          default -> {
             // The only remaining value is successful (no need to do anything!)
-            break;
+          }
         }
       }, connection.eventLoop()).thenApply(Result::isSuccessful);
     }
