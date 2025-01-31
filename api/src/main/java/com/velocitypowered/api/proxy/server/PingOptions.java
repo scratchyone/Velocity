@@ -63,7 +63,7 @@ public final class PingOptions {
    * @return the virtual hostname to pass to the server for the ping
    * @since 3.4.0
    */
-  public String getVirtualHost() {
+  public @Nullable String getVirtualHost() {
     return this.virtualHost;
   }
 
